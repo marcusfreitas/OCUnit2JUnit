@@ -1,8 +1,8 @@
 """
-ijunitreport - A Python script that generate a JUnit's XML file. This allows you to use that
+ocunit2junit - A Python script that generate a JUnit's XML file. This allows you to use that
 on continuos integration servers like Jenkins, Hudson, QuickBuild with complete test reports.
 
-https://github.com/vinyguitar/ijunitreport
+https://github.com/vinyguitar/ocunit2junit
 
 """
 
