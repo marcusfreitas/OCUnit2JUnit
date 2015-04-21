@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 """
 ocunit2junit - A Python script that generate a JUnit's XML file. This allows you to use that
 on continuos integration servers like Jenkins, Hudson, QuickBuild with complete test reports.
@@ -14,19 +16,19 @@ import shutil
 import unittest
 from datetime import datetime
 
-__version__ = '0.1.0'
+__version__ = '0.1.1'
 __author__ = 'Vinicius Freitas'
 
-TEST_REPORT_FOLDER = "junit_report"
+test_report_folder = "junit_report"
 
 class InputParser():
     def __init__(self, input_buffer):
         self.input_buffer = input_buffer.split("\n")
         self.exit_code = 0
 
-        if os.path.exists(TEST_REPORT_FOLDER):
-            shutil.rmtree(TEST_REPORT_FOLDER)
-        os.mkdir(TEST_REPORT_FOLDER)
+        if os.path.exists(test_report_folder):
+            shutil.rmtree(test_report_folder)
+        os.mkdir(test_report_folder)
 
     def _clean_input_buffer(self):
         for index, row in enumrate(self.input_buffer):
@@ -50,7 +52,7 @@ class InputParser():
                         datetime.strptime(t, self.time_format))
                 self.last_description = None
 
-            regex = re.compile("Test Suite '(\S+)'.*finished at\s+(.*).")
+            regex = re.compile("Test Suite '(\S+)'.*(?:finished|passed|failed) at\s+(.*).")
             for result in regex.finditer(row):
                 t = result.group(2).replace("+0000", "").strip()
                 self.handle_end_test_suite(
@@ -70,17 +72,18 @@ class InputParser():
                 test_case_duration = float(result.group(2))
                 self.handle_test_passed(test_case, test_case_duration)
 
-            regex = re.compile("(.*): error: -\[(\S+) (\S+)\] : (.*)")
-            for result in regex.finditer(row):
-                error_location = result.group(1)
-                test_suite = result.group(2)
-                error_message = result.group(4)
-                test_case = self.get_test_case_name(result.group(3), description)
-                self.handle_test_error(test_suite, test_case, error_message, error_location)
+            if row.find(": error: -") > 0: # fix to speedup the task
+                regex = re.compile("(.*): error: -\[(\S+) (\S+)\] : (.*)")
+                for result in regex.finditer(row):
+                    error_location = result.group(1)
+                    test_suite = result.group(2)
+                    error_message = result.group(4)
+                    test_case = self.get_test_case_name(result.group(3), description)
+                    self.handle_test_error(test_suite, test_case, error_message, error_location)
 
             regex = re.compile("Test Case '-\[\S+ (\S+)\]' failed \((\S+) seconds\)")
             for result in regex.finditer(row):
-                test_case = self.get_test_case_name(result.grup(1), self.last_description)
+                test_case = self.get_test_case_name(result.group(1), self.last_description)
                 test_case_duration = result.group(2)
                 self.handle_test_failed(test_case, test_case_duration)
 
@@ -101,7 +104,7 @@ class InputParser():
 
     def handle_end_test_suite(self, test_name, end_time):
         if not self.ended_current_test_suite:
-            with open(os.path.join(TEST_REPORT_FOLDER, "TEST-%s.xml" % test_name), "w") as current_file:
+            with open(os.path.join(test_report_folder, "TEST-%s.xml" % test_name), "w") as current_file:
                 host_name = socket.gethostname()
                 test_name = test_name
                 test_duration = end_time - self.cur_start_time
@@ -116,15 +119,15 @@ class InputParser():
                         )
                 current_file.write("<?xml version='1.0' encoding='UTF-8' ?>\n")
                 current_file.write(suite_info)
-                for test in self.tests_results:
+                for test in sorted(self.tests_results):
                     test_case = test
                     duration = self.tests_results[test_case]
                     current_file.write("<testcase classname='%s' name='%s' time='%s'" % (test_name, test_case, duration))
                     if self.errors.has_key(test_case):
-                        current_file.write("test_errors[0]")
-                        current_file.write(self.errors[test_case][0])
-                        current_file.write("test_errors[1]")
-                        current_file.write(self.errors[test_case][1])
+                        print "test_errors[0]"
+                        print self.errors[test_case][0]
+                        print "test_errors[1]"
+                        print self.errors[test_case][1]
 
                         message = self.errors[test_case][0]
                         location = self.errors[test_case][1]
@@ -147,6 +150,10 @@ class InputParser():
     def handle_test_error(self, test_suite, test_case, error_message, error_location):
         self.errors[test_case] = [error_message, error_location]
 
+    def handle_test_failed(self, test_case, test_case_duration):
+        self.total_failed_test_cases += 1
+        self.tests_results[test_case] = test_case_duration
+
     def get_test_case_name(self, test_case, description):
        #if description:
        #    print "DESCRIPTION " + description
@@ -167,7 +174,9 @@ class InputParserTest(unittest.TestCase):
         self.assertTrue(report.exit_code == 0)
 
 if __name__ == "__main__":
-    unittest.main()
-   #with open(sys.argv[1], 'r') as log_buffer_file:
-   #    report = InputParser(log_buffer_file.read())
-   #report.parse_input()
+#   unittest.main()
+   if len(sys.argv) > 2:
+       test_report_folder = sys.argv[2]
+   with open(sys.argv[1], 'r') as log_buffer_file:
+       report = InputParser(log_buffer_file.read())
+   report.parse_input()
