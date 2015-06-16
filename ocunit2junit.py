@@ -14,9 +14,10 @@ import sys
 import socket
 import shutil
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
+from xml.sax.saxutils import escape
 
-__version__ = '0.1.1'
+__version__ = '0.1.2'
 __author__ = 'Vinicius Freitas'
 
 test_report_folder = "junit_report"
@@ -24,6 +25,12 @@ test_report_folder = "junit_report"
 class InputParser():
     def __init__(self, input_buffer):
         self.input_buffer = input_buffer.split("\n")
+        self.ended_current_test_suite = True
+        self.test_case = None
+        self.last_description = None
+        self.total_passed_test_cases = 0
+        self.tests_results = {}
+        self.cur_test_duration = 0.0
         self.exit_code = 0
 
         if os.path.exists(test_report_folder):
@@ -49,6 +56,7 @@ class InputParser():
             for result in regex.finditer(row):
                 t = result.group(2).replace("+0000", "").strip()
                 self.handle_start_test_suite(
+                        result.group(1),
                         datetime.strptime(t, self.time_format))
                 self.last_description = None
 
@@ -63,7 +71,7 @@ class InputParser():
 
             regex = re.compile("Test Case '-\[\S+\s+(\S+)\]' started.")
             for result in regex.finditer(row):
-                test_case = result.group(1)
+                self.test_case = result.group(1)
                 self.last_description = None
 
             regex = re.compile("Test Case '-\[\S+\s+(\S+)\]' passed \((.*) seconds\)")
@@ -71,13 +79,14 @@ class InputParser():
                 test_case = self.get_test_case_name(result.group(1), self.last_description)
                 test_case_duration = float(result.group(2))
                 self.handle_test_passed(test_case, test_case_duration)
+                self.test_case = None
 
             if row.find(": error: -") > 0: # fix to speedup the task
                 regex = re.compile("(.*): error: -\[(\S+) (\S+)\] : (.*)")
                 for result in regex.finditer(row):
-                    error_location = result.group(1)
+                    error_location = escape(result.group(1), {"'": "&#39;"})
                     test_suite = result.group(2)
-                    error_message = result.group(4)
+                    error_message = escape(result.group(4), {"'": "&#39;"})
                     test_case = self.get_test_case_name(result.group(3), description)
                     self.handle_test_error(test_suite, test_case, error_message, error_location)
 
@@ -86,6 +95,7 @@ class InputParser():
                 test_case = self.get_test_case_name(result.group(1), self.last_description)
                 test_case_duration = result.group(2)
                 self.handle_test_failed(test_case, test_case_duration)
+                self.test_case = None
 
             regex = re.compile("BUILD FAILED")
             if regex.search(row):
@@ -94,28 +104,37 @@ class InputParser():
             if description:
                 self.last_description = description
 
-    def handle_start_test_suite(self, start_time):
+        self.handle_unfinished_test_suite()
+
+    def handle_start_test_suite(self, test_name, start_time):
         self.total_failed_test_cases = 0
         self.total_passed_test_cases = 0
         self.tests_results = {}
         self.errors = {}
         self.ended_current_test_suite = False
+        self.cur_test_name = test_name
         self.cur_start_time = start_time
+        self.cur_test_duration = 0.0
 
     def handle_end_test_suite(self, test_name, end_time):
         if not self.ended_current_test_suite:
             with open(os.path.join(test_report_folder, "TEST-%s.xml" % test_name), "w") as current_file:
                 host_name = socket.gethostname()
                 test_name = test_name
-                test_duration = end_time - self.cur_start_time
                 total_tests = self.total_failed_test_cases + self.total_passed_test_cases
+                if end_time:
+                    test_duration = end_time - self.cur_start_time
+                    time_stamp = end_time.strftime(self.time_format)
+                else:
+                    test_duration = self.cur_test_duration
+                    time_stamp = (self.cur_start_time + timedelta(seconds=self.cur_test_duration)).strftime(self.time_format)
                 suite_info = "<testsuite errors='0' failures='%d' hostname='%s' name='%s' tests='%d' time='%s' timestamp='%s'>\n" % (
                         self.total_failed_test_cases,
                         host_name,
                         test_name,
                         total_tests,
                         str(test_duration),
-                        end_time.strftime(self.time_format)
+                        time_stamp
                         )
                 current_file.write("<?xml version='1.0' encoding='UTF-8' ?>\n")
                 current_file.write(suite_info)
@@ -143,9 +162,17 @@ class InputParser():
                 current_file.write("</testsuite>\n")
             self.ended_current_test_suite = True
 
+    def handle_unfinished_test_suite(self):
+        if not self.ended_current_test_suite:
+            if self.test_case:
+                self.handle_test_error(self.cur_test_name, self.test_case, "UNFINISHED", None)
+                self.handle_test_failed(self.test_case, 0.0)
+            self.handle_end_test_suite(self.cur_test_name, None)
+
     def handle_test_passed(self, test_case, test_case_duration):
         self.total_passed_test_cases += 1
         self.tests_results[test_case] = test_case_duration
+        self.cur_test_duration += float(test_case_duration)
 
     def handle_test_error(self, test_suite, test_case, error_message, error_location):
         self.errors[test_case] = [error_message, error_location]
@@ -153,6 +180,7 @@ class InputParser():
     def handle_test_failed(self, test_case, test_case_duration):
         self.total_failed_test_cases += 1
         self.tests_results[test_case] = test_case_duration
+        self.cur_test_duration += float(test_case_duration)
 
     def get_test_case_name(self, test_case, description):
        #if description:
